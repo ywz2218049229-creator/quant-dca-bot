@@ -1,30 +1,18 @@
 import os
 import requests
-import yfinance as yf
 import pandas as pd
+import yfinance as yf
 
-# =========================
-# 用户参数（按你的情况填写）
-# =========================
+from datetime import datetime
 
-CURRENT_NDX = 3855      # 纳指持仓
-CURRENT_SPX = 1728      # 标普持仓
-CASH = 117577           # 现金仓
-
-MONTHLY_INVEST = 1500   # 每月计划投入
-
-TARGET_NDX = 0.70
-TARGET_SPX = 0.30
-
-# =========================
-# Telegram
-# =========================
+from config import *
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 
 def send_message(text):
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     requests.post(
@@ -36,21 +24,40 @@ def send_message(text):
     )
 
 
-# =========================
-# 获取市场数据
-# =========================
+def get_fear_greed():
+
+    try:
+
+        url = "https://api.alternative.me/fng/"
+
+        data = requests.get(url, timeout=10).json()
+
+        value = int(data["data"][0]["value"])
+
+        label = data["data"][0]["value_classification"]
+
+        return value, label
+
+    except:
+
+        return None, "Unavailable"
+
+
+# ======================
+# 市场数据
+# ======================
 
 ndx = yf.Ticker("^NDX")
 spx = yf.Ticker("^GSPC")
 vix = yf.Ticker("^VIX")
 
-ndx_data = ndx.history(period="1y")
+ndx_data = ndx.history(period="max")
 spx_data = spx.history(period="5d")
 vix_data = vix.history(period="5d")
 
-# =========================
+# ======================
 # 涨跌幅
-# =========================
+# ======================
 
 ndx_change = (
     (ndx_data["Close"].iloc[-1] -
@@ -68,29 +75,32 @@ spx_change = (
 
 vix_value = float(vix_data["Close"].iloc[-1])
 
-# =========================
-# 纳指回撤
-# =========================
+# ======================
+# ATH回撤
+# ======================
 
 ndx_now = float(ndx_data["Close"].iloc[-1])
-ndx_high = float(ndx_data["Close"].max())
+
+ath = float(ndx_data["Close"].max())
 
 drawdown = (
-    (ndx_now - ndx_high)
-    / ndx_high
+    (ndx_now - ath)
+    / ath
 ) * 100
 
-# =========================
-# RSI(14)
-# =========================
+# ======================
+# RSI
+# ======================
 
 delta = ndx_data["Close"].diff()
 
 gain = delta.where(delta > 0, 0)
+
 loss = -delta.where(delta < 0, 0)
 
-avg_gain = gain.rolling(window=14).mean()
-avg_loss = loss.rolling(window=14).mean()
+avg_gain = gain.rolling(14).mean()
+
+avg_loss = loss.rolling(14).mean()
 
 rs = avg_gain / avg_loss
 
@@ -98,13 +108,18 @@ rsi = 100 - (100 / (1 + rs))
 
 rsi_value = float(rsi.iloc[-1])
 
-# =========================
+# ======================
+# Fear & Greed
+# ======================
+
+fg_value, fg_label = get_fear_greed()
+
+# ======================
 # 评分系统
-# =========================
+# ======================
 
 score = 5
 
-# 回撤评分
 if drawdown <= -20:
     score += 4
 elif drawdown <= -15:
@@ -114,7 +129,6 @@ elif drawdown <= -10:
 elif drawdown <= -5:
     score += 1
 
-# VIX评分
 if vix_value > 30:
     score += 3
 elif vix_value > 25:
@@ -122,139 +136,204 @@ elif vix_value > 25:
 elif vix_value > 20:
     score += 1
 
-# RSI评分
 if rsi_value < 30:
     score += 2
 elif rsi_value < 50:
     score += 1
-elif rsi_value > 70:
-    score -= 1
 
-score = max(0, min(score, 10))
+if fg_value is not None:
 
-# =========================
-# 基础投入
-# =========================
+    if fg_value < 25:
+        score += 2
 
-base_ndx = MONTHLY_INVEST * TARGET_NDX
-base_spx = MONTHLY_INVEST * TARGET_SPX
+    elif fg_value < 40:
+        score += 1
+
+score = min(score, 10)
+
+# ======================
+# 周投资金额
+# ======================
+
+weekly_budget = MONTHLY_INVEST / 4.345
+
+base_ndx = weekly_budget * TARGET_NDX
+
+base_spx = weekly_budget * TARGET_SPX
 
 cash_extra = 0
 
-# =========================
-# 动态金额建议
-# =========================
-
 if score >= 9:
 
-    ndx_amount = base_ndx * 1.5
-    spx_amount = base_spx
+    ndx_amount = base_ndx * 2
 
     cash_extra = 2000
 
 elif score == 8:
 
-    ndx_amount = base_ndx * 1.3
-    spx_amount = base_spx
+    ndx_amount = base_ndx * 1.5
 
 elif score == 7:
 
     ndx_amount = base_ndx * 1.2
-    spx_amount = base_spx
 
 else:
 
     ndx_amount = base_ndx
-    spx_amount = base_spx
 
-# =========================
-# 当前仓位
-# =========================
+spx_amount = base_spx
+
+# ======================
+# 再平衡
+# ======================
 
 total_position = CURRENT_NDX + CURRENT_SPX
 
-ndx_ratio = (
-    CURRENT_NDX / total_position
-) * 100
+ndx_ratio = CURRENT_NDX / total_position * 100
 
-spx_ratio = (
-    CURRENT_SPX / total_position
-) * 100
+spx_ratio = CURRENT_SPX / total_position * 100
 
-# =========================
-# 状态描述
-# =========================
+if abs(ndx_ratio - 70) > 5:
 
-if score >= 9:
-    market_state = "🔥 极佳加仓区"
-
-elif score >= 8:
-    market_state = "🟢 较好机会区"
-
-elif score >= 7:
-    market_state = "🟡 轻度机会区"
+    rebalance = "⚠ 建议再平衡"
 
 else:
-    market_state = "⚪ 正常区"
 
-# =========================
-# 推送消息
-# =========================
+    rebalance = "✅ 无需调整"
+
+# ======================
+# history.csv
+# ======================
+
+today = datetime.now().strftime("%Y-%m-%d")
+
+record = {
+    "date": today,
+    "score": score,
+    "vix": round(vix_value, 2),
+    "rsi": round(rsi_value, 2),
+    "drawdown": round(drawdown, 2),
+    "ndx_amount": round(ndx_amount),
+    "spx_amount": round(spx_amount)
+}
+
+history_file = "history.csv"
+
+if os.path.exists(history_file):
+
+    df = pd.read_csv(history_file)
+
+    if today not in df["date"].astype(str).values:
+
+        df = pd.concat(
+            [df, pd.DataFrame([record])],
+            ignore_index=True
+        )
+
+else:
+
+    df = pd.DataFrame([record])
+
+df.to_csv(history_file, index=False)
+
+# ======================
+# invest_log.csv
+# ======================
+
+log_file = "invest_log.csv"
+
+if not os.path.exists(log_file):
+
+    pd.DataFrame(
+        columns=[
+            "date",
+            "ndx_actual",
+            "spx_actual"
+        ]
+    ).to_csv(
+        log_file,
+        index=False
+    )
+
+invest_df = pd.read_csv(log_file)
+
+execution_rate = "暂无数据"
+
+if len(invest_df) > 0:
+
+    actual = (
+        invest_df["ndx_actual"].sum()
+        +
+        invest_df["spx_actual"].sum()
+    )
+
+    suggested = (
+        df["ndx_amount"].sum()
+        +
+        df["spx_amount"].sum()
+    )
+
+    if suggested > 0:
+
+        execution_rate = (
+            f"{actual / suggested * 100:.1f}%"
+        )
+
+# ======================
+# Telegram
+# ======================
 
 message = f"""
 📊 泡泡投资系统
 
-纳斯达克100：{ndx_change:.2f}%
-标普500：{spx_change:.2f}%
+纳指：{ndx_change:.2f}%
+标普：{spx_change:.2f}%
 
 VIX：{vix_value:.2f}
 RSI：{rsi_value:.2f}
 
-纳指回撤：{drawdown:.2f}%
+Fear&Greed：{fg_value}
+({fg_label})
+
+ATH回撤：{drawdown:.2f}%
 
 ━━━━━━━━━━
 
 综合评分：{score}/10
 
-状态：
-
-{market_state}
-
 ━━━━━━━━━━
 
-本月建议
+本周执行单
 
 纳指：{ndx_amount:.0f} 元
 
 标普：{spx_amount:.0f} 元
 
-现金仓额外投入：
+现金仓额外：
 
 {cash_extra:.0f} 元
 
 ━━━━━━━━━━
 
-当前资产
+{rebalance}
 
-纳指：{CURRENT_NDX:.0f} 元
-标普：{CURRENT_SPX:.0f} 元
+当前：
 
-现金：{CASH:.0f} 元
+纳指 {ndx_ratio:.1f}%
+标普 {spx_ratio:.1f}%
+
+目标：
+
+70%
+30%
 
 ━━━━━━━━━━
 
-当前配置
+执行率：
 
-纳指：{ndx_ratio:.1f}%
-标普：{spx_ratio:.1f}%
-
-目标配置
-
-纳指：70%
-标普：30%
+{execution_rate}
 """
 
 send_message(message)
 
 print(message)
-
