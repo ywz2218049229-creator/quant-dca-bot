@@ -2,7 +2,7 @@ name: Quant Bot
 
 on:
   schedule:
-    - cron: '*/1 * * * *'
+    - cron: '52 10 * * *'
   workflow_dispatch:
 
 jobs:
