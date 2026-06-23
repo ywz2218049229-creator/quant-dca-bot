@@ -1,3 +1,16 @@
+from datetime import date
+import chinese_calendar as calendar
+
+today = date.today()
+
+# 中国市场休市则退出
+if (
+    today.weekday() >= 5
+    or calendar.is_holiday(today)
+):
+    print("China Market Closed")
+    exit()
+    
 from market import (
     get_market_data,
     get_fear_greed,
